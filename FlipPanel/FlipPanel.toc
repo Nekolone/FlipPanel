@@ -1,0 +1,5 @@
+## Interface: 16001
+## Title: FlipPanel
+## Notes: Flip one commodity: buy exactly N units at or below your max price, post at your price. Every action is one click or Ctrl+mouse wheel notch.
+## SavedVariables: FlipPanelDB
+FlipPanel.lua
