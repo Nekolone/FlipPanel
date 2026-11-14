@@ -12,8 +12,9 @@ Commodities only: items sold by quantity, such as cloth, ore, bars and herbs.
 - Buys exactly N units when the average price is at or below your max. It never buys above your max.
 - One button (or Ctrl + mouse wheel). Every press sends exactly one request: get the price, confirm, or cancel.
 - Posts the chosen quantity at a separate sell price for the chosen duration.
-- A list of the last 10 items, each with its own buy price, sell price and quantity.
-- Quantity buttons 5 / 10 / 20 / 50, sounds, and per-session spending stats.
+- Item history: 1, 2 or 3 rows of 10 (the "History" button), each item with its own buy price, sell price and quantity.
+- Quantity buttons 5 / 10 / 20 / 50 plus your own (right-click the 5th button to store the number in the Quantity box), each can have a key binding.
+- Sounds and per-session spending stats.
 - A log window: purchases and posts in one tab, errors and cancels in another. The log is saved between sessions.
 
 ## Install
@@ -36,6 +37,9 @@ Item, Sell and Buy. The sound toggle, the log button and session stats sit at th
 4. If the server never answers (the button is stuck on "Waiting for the server..."), press the same button again after
    3 seconds: it resets the panel. If someone bought the units before your "CONFIRM" press, the purchase fails
    with an auction house error and the panel goes back to "Buy" by itself: the next press asks for a new price.
+
+Quantity keys: Esc → Options → Keybindings → AddOns → FlipPanel, for example Ctrl+1 … Ctrl+5.
+No keys are set by default. A key only fills in the quantity, it sends nothing to the auction house.
 
 The interface follows the game client language: Russian on a Russian client, English on any other.
 

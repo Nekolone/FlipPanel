@@ -89,6 +89,11 @@ local EN = {
   ["/flip — показать/скрыть, /flip log, /flip debug, /flip wheel, /flip reset, /flip resetpos"] =
     "/flip: show/hide, /flip log, /flip debug, /flip wheel, /flip reset, /flip resetpos",
   ["Ошибка аукциона. Жми ещё раз для сброса"] = "Auction house error. Press again to reset",
+  ["История: %d"] = "History: %d",
+  ["Своя пачка"] = "Your own quantity",
+  ["ПКМ — запомнить число из поля «Кол-во»"] = "Right-click: remember the number in the Quantity box",
+  ["Кол-во: %d"] = "Quantity: %d",
+  ["Кол-во: своё"] = "Quantity: your own",
 }
 local isRU = GetLocale and GetLocale() == "ruRU"
 local function L(s) return isRU and s or EN[s] or s end
@@ -96,12 +101,21 @@ ns.EN = EN -- for the offline check that every string has a translation
 
 local STUCK_AFTER = 3     -- seconds without a server answer after which the next press resets the panel
 local MIN_QUOTE_LEFT = 2  -- a stale quote fails on Forever ("Internal auction error", per ForeverFlip): requote
-local MAX_ITEMS = 10      -- items kept in the picker row
+local ROW_ITEMS = 10      -- icons per history row
+local MAX_ROWS = 3        -- history rows you can show
+local MAX_ITEMS = ROW_ITEMS * MAX_ROWS -- items kept, even while fewer rows are shown
 local LOG_MAX = 200       -- lines kept per log
-local QTY_PRESETS = { 5, 10, 20, 50 }
+local QTY_PRESETS = { 5, 10, 20, 50 } -- plus a 5th, your own: db().customQty
 local DURATIONS = { "AUCTION_DURATION_ONE", "AUCTION_DURATION_TWO", "AUCTION_DURATION_THREE" }
 
+-- Key bindings (Bindings.xml, Esc > Options > Keybindings > AddOns): set the buy quantity, nothing else
+BINDING_HEADER_FLIPPANEL = "FlipPanel"
+for i, n in ipairs(QTY_PRESETS) do _G["BINDING_NAME_FLIPPANEL_QTY" .. i] = (L("Кол-во: %d")):format(n) end
+BINDING_NAME_FLIPPANEL_QTY5 = L("Кол-во: своё")
+function FlipPanel_SetQty(i) ns.setBuyQty(ns.presetQty(i)) end
+
 local ui
+local host -- parent for the UI helpers below: the panel, or its body under the history rows
 -- idle    --press--> quoting (StartCommoditiesPurchase)
 -- quoting --answer--> ready (price ok) | cancel (too expensive, no gold, unavailable, settings changed)
 -- ready   --press--> confirming (ConfirmCommoditiesPurchase) | idle (quote nearly expired: Cancel)
@@ -486,7 +500,7 @@ end
 
 ---------------------------------------------------------------- UI build
 local function makeLabel(text, y, x)
-  local fs = ui:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  local fs = host:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   fs:SetPoint("TOPLEFT", x or 16, y)
   fs:SetText(text)
   return fs
@@ -494,7 +508,7 @@ end
 
 -- onUserChange runs only for typing, not for SetText from code
 local function makeBox(y, width, numeric, onUserChange)
-  local eb = CreateFrame("EditBox", nil, ui, "InputBoxTemplate")
+  local eb = CreateFrame("EditBox", nil, host, "InputBoxTemplate")
   eb:SetSize(width, 20)
   eb:SetPoint("TOPRIGHT", -16, y + 4)
   eb:SetAutoFocus(false)
@@ -510,7 +524,7 @@ local function makeBox(y, width, numeric, onUserChange)
 end
 
 local function makeButton(name, text, width, onClick, parent)
-  local b = CreateFrame("Button", name, parent or ui, "UIPanelButtonTemplate")
+  local b = CreateFrame("Button", name, parent or host, "UIPanelButtonTemplate")
   b:SetSize(width, 22)
   b:SetText(text)
   b:SetScript("OnClick", onClick)
@@ -518,7 +532,7 @@ local function makeButton(name, text, width, onClick, parent)
 end
 
 local function makeCheck(x, y, text, key, onToggle)
-  local cb = CreateFrame("CheckButton", nil, ui, "UICheckButtonTemplate")
+  local cb = CreateFrame("CheckButton", nil, host, "UICheckButtonTemplate")
   cb:SetSize(24, 24)
   cb:SetPoint("TOPLEFT", x, y)
   cb:SetChecked(db()[key])
@@ -526,7 +540,7 @@ local function makeCheck(x, y, text, key, onToggle)
     db()[key] = self:GetChecked() and true or false
     if onToggle then onToggle() end
   end)
-  local fs = ui:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  local fs = host:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   fs:SetPoint("LEFT", cb, "RIGHT", 0, 0)
   fs:SetText(text)
   return cb
@@ -534,20 +548,20 @@ end
 
 -- Block header: thin gold line plus title; returns the y below it. No title = just the line.
 local function section(title, y)
-  local line = ui:CreateTexture(nil, "ARTWORK")
+  local line = host:CreateTexture(nil, "ARTWORK")
   line:SetColorTexture(1, 0.82, 0, 0.3)
   line:SetPoint("TOPLEFT", 12, y)
   line:SetPoint("TOPRIGHT", -12, y)
   line:SetHeight(1)
   if not title then return y - 8 end
-  local fs = ui:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  local fs = host:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   fs:SetPoint("TOPLEFT", 14, y - 5)
   fs:SetText(title)
   return y - 24
 end
 
 local function statusLine(y, font)
-  local fs = ui:CreateFontString(nil, "OVERLAY", font)
+  local fs = host:CreateFontString(nil, "OVERLAY", font)
   fs:SetPoint("TOPLEFT", 16, y)
   fs:SetWidth(228)
   fs:SetJustifyH("LEFT")
@@ -564,9 +578,34 @@ local function placeUI()
   end
 end
 
+local function presetQty(i) return QTY_PRESETS[i] or db().customQty end
+ns.presetQty = presetQty
+
+-- Show db().rows history rows: the body moves under the last row and the panel resizes. UI only.
+local function layoutRows()
+  local top = ui.listY - 28 - (db().rows - 1) * 23
+  ui.body:ClearAllPoints()
+  ui.body:SetPoint("TOPLEFT", ui, "TOPLEFT", 0, top)
+  ui.body:SetPoint("TOPRIGHT", ui, "TOPRIGHT", 0, top)
+  ui:SetHeight(-top + ui.bodyHeight)
+  ui.rowsBtn:SetText((L("История: %d")):format(db().rows))
+  refreshList()
+end
+
+-- Buy quantity from a preset button or its key binding. Only fills the box: no AH request.
+function ns.setBuyQty(n)
+  local c = ui and cur()
+  if not c or not n or n < 1 then return end
+  c.qty = n
+  dropReady()
+  ui.qtyBox:SetText(tostring(n))
+  refreshBuyButton()
+end
+
 local function buildUI()
   local d = db()
   ui = CreateFrame("Frame", "FlipPanelFrame", AuctionHouseFrame, "BasicFrameTemplateWithInset")
+  host = ui
   ui:SetSize(260, 400)
   ui:SetMovable(true)
   ui:SetClampedToScreen(true)
@@ -597,12 +636,12 @@ local function buildUI()
   ui.slot:SetScript("OnClick", takeCursor)
   y = y - 42
 
-  -- picker row: recent / saved items, each with its own price and qty
+  -- history rows (1..MAX_ROWS shown): recent items, each with its own prices and qty
   ui.list = {}
   for i = 1, MAX_ITEMS do
     local b = CreateFrame("Button", nil, ui)
     b:SetSize(20, 20)
-    b:SetPoint("TOPLEFT", 16 + (i - 1) * 23, y)
+    b:SetPoint("TOPLEFT", 16 + (i - 1) % ROW_ITEMS * 23, y - math.floor((i - 1) / ROW_ITEMS) * 23)
     b.icon = b:CreateTexture(nil, "ARTWORK")
     b.icon:SetAllPoints()
     b.mark = b:CreateTexture(nil, "OVERLAY")
@@ -627,7 +666,12 @@ local function buildUI()
     b:SetScript("OnLeave", function() GameTooltip:Hide() end)
     ui.list[i] = b
   end
-  y = y - 28
+  ui.listY = y
+
+  -- everything below the history lives in one frame that moves when the row count changes
+  ui.body = CreateFrame("Frame", nil, ui)
+  host = ui.body
+  y = 0
 
   makeLabel(L("ID (Enter или Shift+клик по ссылке)"), y)
   ui.idBox = makeBox(y, 60, true)
@@ -689,16 +733,29 @@ local function buildUI()
   end)
   y = y - 24
 
-  for i, n in ipairs(QTY_PRESETS) do
-    local b = makeButton(nil, tostring(n), 40, function()
-      local c = cur()
-      if not c then return end
-      c.qty = n
-      dropReady()
-      ui.qtyBox:SetText(tostring(n))
-      refreshBuyButton()
+  -- presets 5/10/20/50 + your own (RMB stores the number typed in the qty box); key bindings press the same
+  local count = #QTY_PRESETS + 1
+  for i = 1, count do
+    local b = makeButton(nil, tostring(presetQty(i)), 40, function(self, button)
+      if i == count and button == "RightButton" then
+        local n = tonumber(ui.qtyBox:GetText())
+        if n and n > 0 then db().customQty = n; self:SetText(tostring(n)) end
+        return
+      end
+      ns.setBuyQty(presetQty(i))
     end)
-    b:SetPoint("TOPRIGHT", -16 - (#QTY_PRESETS - i) * 44, y)
+    b:SetPoint("TOPRIGHT", -16 - (count - i) * 44, y)
+    if i == count then
+      ui.customBtn = b
+      b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+      b:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:AddLine(L("Своя пачка"))
+        GameTooltip:AddLine(L("ПКМ — запомнить число из поля «Кол-во»"), 0.7, 0.7, 0.7)
+        GameTooltip:Show()
+      end)
+      b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    end
   end
   y = y - 30
 
@@ -708,7 +765,7 @@ local function buildUI()
   ui.buy:SetPoint("TOP", 0, y)
   y = y - 32
 
-  local hint = ui:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  local hint = host:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
   hint:SetPoint("TOP", 0, y)
   hint:SetText(L("Ctrl + колесо мыши = кнопка покупки"))
   y = y - 18
@@ -720,12 +777,19 @@ local function buildUI()
   ---------------- bottom: settings, log, session stats
   y = section(nil, y)
   makeCheck(12, y + 2, L("Звуки"), "sound")
-  local logBtn = makeButton(nil, L("Лог"), 90, function() ns.toggleLog() end)
+  local logBtn = makeButton(nil, L("Лог"), 70, function() ns.toggleLog() end)
   logBtn:SetPoint("TOPRIGHT", -16, y)
+  ui.rowsBtn = makeButton(nil, "", 84, function()
+    db().rows = db().rows % MAX_ROWS + 1
+    layoutRows()
+  end)
+  ui.rowsBtn:SetPoint("TOPRIGHT", -90, y)
   y = y - 26
   ui.stats = statusLine(y, "GameFontDisableSmall")
   y = y - 20
-  ui:SetHeight(-y + 8)
+  ui.bodyHeight = -y + 8
+  ui.body:SetHeight(ui.bodyHeight)
+  layoutRows()
 
   resetPost()
   refreshItem()
@@ -835,8 +899,9 @@ end
 
 refreshList = function()
   local ids, sel = sortedItems(db().items), db().itemID
+  local shown = db().rows * ROW_ITEMS
   for i, b in ipairs(ui.list) do
-    local id = ids[i]
+    local id = i <= shown and ids[i] or nil
     b.id = id
     if id then
       b.icon:SetTexture(C_Item.GetItemIconByID(id) or "Interface\\Icons\\INV_Misc_QuestionMark")
@@ -932,6 +997,8 @@ local function onEvent(_, event, ...)
     d.log.buys, d.log.errors, d.log.debug = d.log.buys or {}, d.log.errors or {}, d.log.debug or {}
     d.postQty = d.postQty or 1
     d.postDur = d.postDur or 1 -- 1 = shortest
+    d.rows = math.min(math.max(tonumber(d.rows) or 1, 1), MAX_ROWS)
+    d.customQty = d.customQty or 100
 
   elseif event == "AUCTION_HOUSE_SHOW" then
     ahOpen = true

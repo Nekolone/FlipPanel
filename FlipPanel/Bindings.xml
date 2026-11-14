@@ -1,0 +1,7 @@
+<Bindings>
+  <Binding name="FLIPPANEL_QTY1" header="FLIPPANEL" category="ADDONS">FlipPanel_SetQty(1)</Binding>
+  <Binding name="FLIPPANEL_QTY2" category="ADDONS">FlipPanel_SetQty(2)</Binding>
+  <Binding name="FLIPPANEL_QTY3" category="ADDONS">FlipPanel_SetQty(3)</Binding>
+  <Binding name="FLIPPANEL_QTY4" category="ADDONS">FlipPanel_SetQty(4)</Binding>
+  <Binding name="FLIPPANEL_QTY5" category="ADDONS">FlipPanel_SetQty(5)</Binding>
+</Bindings>
