@@ -2,8 +2,10 @@
 -- Pure WoW API (C_AuctionHouse). One press of the buy button (click, or Ctrl + mouse wheel while the AH
 -- is open) sends exactly one request: ask price, confirm, or cancel. A purchase always takes two presses.
 -- No timers and no automatic requests: even a cancel is a press. One action = one press.
--- An AH error on a purchase (someone bought first) returns the panel to "Купить" at once; if the server
--- never answers, the next press of the same button after STUCK_AFTER s resets the panel.
+-- An AH error (on a purchase: someone bought first; on a price request: the server refused it) returns the
+-- panel to "Купить" at once, without a request; if the server never answers, the next press of the same
+-- button after STUCK_AFTER s resets the panel.
+-- /flip fast (experiment): a quote that does not fit is not cancelled, the next press just asks again.
 local _, ns = ...
 
 ---------------------------------------------------------------- localization
@@ -86,9 +88,12 @@ local EN = {
   ["Писать отладку: каждый запрос к аукциону и ответ сервера"] = "Debug log: every auction house request and server answer",
   ["Открой аукцион, панель появится рядом с ним"] = "Open the auction house, the panel appears next to it",
   ["Отладка: "] = "Debug: ",
-  ["/flip — показать/скрыть, /flip log, /flip debug, /flip wheel, /flip reset, /flip resetpos"] =
-    "/flip: show/hide, /flip log, /flip debug, /flip wheel, /flip reset, /flip resetpos",
-  ["Ошибка аукциона. Жми ещё раз для сброса"] = "Auction house error. Press again to reset",
+  ["/flip — показать/скрыть, /flip log, /flip debug, /flip fast, /flip wheel, /flip reset, /flip resetpos"] =
+    "/flip: show/hide, /flip log, /flip debug, /flip fast, /flip wheel, /flip reset, /flip resetpos",
+  ["Ошибка аукциона. Жми, чтобы узнать цену заново"] = "Auction house error. Press to get a new price",
+  [". Жми, чтобы узнать цену заново"] = ". Press to get a new price",
+  ["Быстрый режим (цена не подошла — следующее нажатие сразу запрашивает новую, без отмены): "] =
+    "Fast mode (price does not fit: the next press asks for a new one right away, no cancel): ",
   ["История: %d"] = "History: %d",
   ["Своя пачка"] = "Your own quantity",
   ["ПКМ — запомнить число из поля «Кол-во»"] = "Right-click: remember the number in the Quantity box",
@@ -105,6 +110,7 @@ local ROW_ITEMS = 10      -- icons per history row
 local MAX_ROWS = 3        -- history rows you can show
 local MAX_ITEMS = ROW_ITEMS * MAX_ROWS -- items kept, even while fewer rows are shown
 local LOG_MAX = 200       -- lines kept per log
+local DEBUG_MAX = 600     -- lines kept in the debug log
 local QTY_PRESETS = { 5, 10, 20, 50 } -- plus a 5th, your own: db().customQty
 local DURATIONS = { "AUCTION_DURATION_ONE", "AUCTION_DURATION_TWO", "AUCTION_DURATION_THREE" }
 
@@ -120,7 +126,9 @@ local host -- parent for the UI helpers below: the panel, or its body under the 
 -- quoting --answer--> ready (price ok) | cancel (too expensive, no gold, unavailable, settings changed)
 -- ready   --press--> confirming (ConfirmCommoditiesPurchase) | idle (quote nearly expired: Cancel)
 -- cancel  --press--> idle (CancelCommoditiesPurchase)
--- quoting/confirming --press after an AH error or STUCK_AFTER s--> idle (Cancel if a quote may exist)
+-- quoting/confirming --AH error--> idle (no request)
+-- quoting/confirming --press after STUCK_AFTER s--> idle (Cancel if a quote may exist)
+-- fast mode: "cancel" is skipped, a quote that does not fit goes straight to idle
 local state = "idle"      -- idle | quoting | ready | cancel | confirming
 local pending = nil       -- { itemID, qty, maxUnit, total, stale }
 local postTry = nil       -- { loc, qty, dur, price } of the last post attempt
@@ -187,13 +195,13 @@ local function log(kind, text) -- kind: "buys" | "errors"
   local d = FlipPanelDB
   if not (d and d.log) then return end
   local line = date("%d.%m %H:%M:%S") .. "  " .. text
-  pushLog(d.log[kind], line, LOG_MAX)
+  pushLog(d.log[kind], line, kind == "debug" and DEBUG_MAX or LOG_MAX)
   if refreshLog then refreshLog(kind, line) end
 end
 
 -- /flip debug: every AH request and server answer goes to the "Отладка" log tab (English, for bug reports)
 local function dbg(text)
-  if FlipPanelDB and FlipPanelDB.debug then log("debug", text) end
+  if FlipPanelDB and FlipPanelDB.debug then log("debug", ("%06.2f  "):format(GetTime() % 1000) .. text) end
 end
 
 local function quoteLeft()
@@ -295,6 +303,7 @@ end
 
 ---------------------------------------------------------------- buy
 local function busy()
+  dbg("press skipped: throttle not ready (state=" .. state .. ")")
   stats.busy = stats.busy + 1
   refreshStats()
   setStatus(L("Сервер занят, жми ещё"))
@@ -309,6 +318,9 @@ end
 local function toCancel(reason)
   stats.cancels = stats.cancels + 1
   log("errors", reason)
+  if db().fast then -- no cancel press: the next press asks for a new price, which replaces this quote
+    return toIdle(reason .. L(". Жми, чтобы узнать цену заново"))
+  end
   state = "cancel" -- a quote we won't confirm: the next press of the same button sends the cancel
   setStatus(reason .. L(". Жми, чтобы отменить котировку"))
   refreshBuyButton()
@@ -339,7 +351,7 @@ end
 -- Called only from the 2nd press (onBuyClick)
 local function confirm()
   state = "confirming"
-  pending.sentAt, pending.errored = GetTime(), nil
+  pending.sentAt = GetTime()
   setStatus((L("Беру %d за %s")):format(pending.qty, money(pending.total)))
   refreshBuyButton()
   dbg(("-> Confirm qty=%d quoteLeft=%s quoteAge=%.1fs"):format(pending.qty,
@@ -358,10 +370,12 @@ end
 local function onBuyClick()
   if not ui:IsVisible() then return end -- hidden panel never buys (binding may survive a hide in combat)
 
-  -- Waiting for the server: presses are ignored, unless it's stuck. Then this same press resets the panel:
-  -- right away after an AH error, or once STUCK_AFTER s passed with no answer. No timer: only your press.
+  -- Waiting for the server: presses are ignored, unless it's stuck. Then this same press resets the panel,
+  -- once STUCK_AFTER s passed with no answer. No timer: only your press.
   if state == "quoting" or state == "confirming" then
-    if not pending.errored and GetTime() - pending.sentAt < STUCK_AFTER then return end
+    if GetTime() - pending.sentAt < STUCK_AFTER then
+      return dbg(("press ignored: %s for %.2fs"):format(state, GetTime() - pending.sentAt))
+    end
     if state == "quoting" then -- a quote may still be open: this press cancels it (one request)
       if not serverReady() then return busy() end
       sendCancel("stuck reset")
@@ -960,8 +974,12 @@ SlashCmdList["FLIPPANEL"] = function(text)
     if db().debug then ns.showLog("debug") elseif logUI then fillLog() end
   elseif text == "log" then
     ns.toggleLog()
+  elseif text == "fast" then
+    db().fast = not db().fast
+    msg(L("Быстрый режим (цена не подошла — следующее нажатие сразу запрашивает новую, без отмены): ")
+      .. (db().fast and L("вкл") or L("выкл")))
   else -- unknown command: show help, never touch the panel
-    msg(L("/flip — показать/скрыть, /flip log, /flip debug, /flip wheel, /flip reset, /flip resetpos"))
+    msg(L("/flip — показать/скрыть, /flip log, /flip debug, /flip fast, /flip wheel, /flip reset, /flip resetpos"))
   end
 end
 
@@ -974,6 +992,9 @@ local EVENTS = {
   "COMMODITY_PURCHASE_SUCCEEDED", "COMMODITY_PURCHASE_FAILED",
   "ADDON_ACTION_BLOCKED", "ADDON_ACTION_FORBIDDEN",
   "AUCTION_HOUSE_SHOW_ERROR", "AUCTION_HOUSE_POST_ERROR", "AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED",
+  -- only written to the debug log: they show what the client throttles and for how long
+  "AUCTION_HOUSE_THROTTLED_MESSAGE_SENT", "AUCTION_HOUSE_THROTTLED_MESSAGE_QUEUED",
+  "AUCTION_HOUSE_THROTTLED_MESSAGE_RESPONSE_RECEIVED", "AUCTION_HOUSE_THROTTLED_SYSTEM_READY",
 }
 for _, e in ipairs(EVENTS) do pcall(f.RegisterEvent, f, e) end -- tolerate events missing on Forever
 
@@ -1042,7 +1063,9 @@ local function onEvent(_, event, ...)
     resetPost()
 
   elseif event == "COMMODITY_PRICE_UPDATED" then
-    if state ~= "quoting" or not pending then return end -- not our quote
+    -- The server may send a new price for a quote that is already open (Blizzard's dialog handles that too):
+    -- a ready quote is checked again, so what you confirm is always the last price the server gave
+    if (state ~= "quoting" and state ~= "ready") or not pending then return end -- not our quote
     local _, totalPrice = ...
     pending.total, pending.quotedAt = totalPrice, GetTime()
     if pending.stale then
@@ -1057,7 +1080,7 @@ local function onEvent(_, event, ...)
     end
 
   elseif event == "COMMODITY_PRICE_UNAVAILABLE" then
-    if state == "quoting" then toCancel((L("Нет в продаже %d шт.")):format(pending.qty)) end
+    if state == "quoting" or state == "ready" then toCancel((L("Нет в продаже %d шт.")):format(pending.qty)) end
 
   elseif event == "COMMODITY_PURCHASE_SUCCEEDED" then
     if state == "confirming" and pending then
@@ -1084,9 +1107,10 @@ local function onEvent(_, event, ...)
       -- Usually someone bought those units first (or the quote went stale): back to "Купить" right away,
       -- so the next press simply asks for a fresh price. The purchase was already sent: nothing to cancel.
       toIdle(L("Не успел: покупка не прошла (ошибка аукциона). Жми, чтобы узнать цену заново"))
-    elseif pending and state == "quoting" then -- no clean answer to the price request: next press resets
-      pending.errored = true
-      setStatus(L("Ошибка аукциона. Жми ещё раз для сброса"))
+    elseif pending and state == "quoting" then
+      -- The server refused the price request (seen right after a failed purchase): no quote was opened,
+      -- so there is nothing to cancel. Back to "Купить": the next press asks again.
+      toIdle(L("Ошибка аукциона. Жми, чтобы узнать цену заново"))
     end
 
   elseif event == "AUCTION_HOUSE_POST_ERROR" then
@@ -1105,7 +1129,7 @@ end
 
 -- Lua errors in event handling also go to the error log; BugSack still gets them
 f:SetScript("OnEvent", function(self, event, ...)
-  if event ~= "ADDON_LOADED" and event ~= "PLAYER_REGEN_ENABLED" then
+  if FlipPanelDB and FlipPanelDB.debug and event ~= "ADDON_LOADED" and event ~= "PLAYER_REGEN_ENABLED" then
     local args = {}
     for i = 1, select("#", ...) do args[i] = tostring((select(i, ...))) end
     dbg(("<- %s %s (state=%s)"):format(event, table.concat(args, " "), state))

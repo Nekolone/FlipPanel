@@ -37,13 +37,14 @@ Item, Sell and Buy. The sound toggle, the log button and session stats sit at th
 4. If the server never answers (the button is stuck on "Waiting for the server..."), press the same button again after
    3 seconds: it resets the panel. If someone bought the units before your "CONFIRM" press, the purchase fails
    with an auction house error and the panel goes back to "Buy" by itself: the next press asks for a new price.
+   The panel does the same when the server answers a price request with an error.
 
 Quantity keys: Esc → Options → Keybindings → AddOns → FlipPanel, for example Ctrl+1 … Ctrl+5.
 No keys are set by default. A key only fills in the quantity, it sends nothing to the auction house.
 
 The interface follows the game client language: Russian on a Russian client, English on any other.
 
-Commands: `/flip` show/hide, `/flip log` log window, `/flip debug` log every auction house request and answer to the "Debug" log tab (the "Copy" button there lets you copy it), `/flip wheel` toggle Ctrl + mouse wheel,
+Commands: `/flip` show/hide, `/flip log` log window, `/flip debug` log every auction house request and answer to the "Debug" log tab (the "Copy" button there lets you copy it), `/flip fast` fast mode (experimental): when the price does not fit there is no cancel, the next press asks for a new price right away, `/flip wheel` toggle Ctrl + mouse wheel,
 `/flip reset` reset stats, `/flip resetpos` move the panel back to its default spot.
 
 ## How it works
