@@ -105,6 +105,10 @@ local function L(s) return isRU and s or EN[s] or s end
 ns.EN = EN -- for the offline check that every string has a translation
 
 local STUCK_AFTER = 3     -- seconds without a server answer after which the next press resets the panel
+-- After a failed purchase the client lifts its usual 0.5 s pause, but the server still refuses a price request
+-- sent sooner than that after the purchase request ("Internal auction error", seen in debug logs: +0.13 s and
+-- +0.32 s refused, +0.51 s answered). Presses inside this window send nothing.
+local FAIL_HOLD = 0.5
 local MIN_QUOTE_LEFT = 2  -- a stale quote fails on Forever ("Internal auction error", per ForeverFlip): requote
 local ROW_ITEMS = 10      -- icons per history row
 local MAX_ROWS = 3        -- history rows you can show
@@ -135,6 +139,7 @@ local postTry = nil       -- { loc, qty, dur, price } of the last post attempt
 local pendingPost = nil   -- set only when the server asked to confirm postTry
 local ahOpen = false
 local stats = { tries = 0, cancels = 0, busy = 0, byItem = {} } -- session only
+local holdUntil = 0       -- GetTime() before which a press asks no price (set by a failed purchase, see FAIL_HOLD)
 
 local function db() return FlipPanelDB end
 local function cur() return db().itemID and db().items[db().itemID] end -- settings of the selected item
@@ -403,6 +408,7 @@ local function onBuyClick()
   end
 
   if state ~= "idle" then return end -- ignore presses while a request is in flight
+  if GetTime() < holdUntil then return dbg("press skipped: too soon after a failed purchase") end
   local c = cur()
   if not c then return setStatus(L("Выбери предмет (слот, ID или список)")) end
   local price = parseMoney(c.priceText)
@@ -1097,6 +1103,7 @@ local function onEvent(_, event, ...)
   elseif event == "COMMODITY_PURCHASE_FAILED" then
     if state == "confirming" then
       log("errors", L("Покупка не прошла (сервер отказал)"))
+      holdUntil = pending.sentAt + FAIL_HOLD
       toIdle(L("Покупка не прошла"))
     end
 
@@ -1106,6 +1113,7 @@ local function onEvent(_, event, ...)
     if pending and state == "confirming" then
       -- Usually someone bought those units first (or the quote went stale): back to "Купить" right away,
       -- so the next press simply asks for a fresh price. The purchase was already sent: nothing to cancel.
+      holdUntil = pending.sentAt + FAIL_HOLD
       toIdle(L("Не успел: покупка не прошла (ошибка аукциона). Жми, чтобы узнать цену заново"))
     elseif pending and state == "quoting" then
       -- The server refused the price request (seen right after a failed purchase): no quote was opened,
