@@ -15,7 +15,15 @@ local EN = {
   ["Сессия: попыток %d, отмен %d, занято %d"] = "Session: tries %d, cancels %d, busy %d",
   ["Этот предмет: куплено %d на %s, ср. %s"] = "This item: bought %d for %s, avg %s",
   ["Этот предмет: пока ничего не куплено"] = "This item: nothing bought yet",
-  ["Купить x%d <= %s"] = "Buy x%d <= %s",
+  ["Купить x%s <= %s"] = "Buy x%s <= %s",
+  ["Разброс количества"] = "Quantity spread",
+  ["Настройки"] = "Settings",
+  ["FlipPanel — настройки"] = "FlipPanel settings",
+  ["Быстрый режим (эксперимент): без отмены котировки"] = "Fast mode (experimental): no quote cancel",
+  ["Сбросить статистику"] = "Reset stats",
+  ["Панель на место"] = "Reset position",
+  ["Каждый запрос цены берёт Кол-во ± это число (не меньше 1). 0 — ровно Кол-во"] =
+    "Each price request takes Quantity ± this number (at least 1). 0: exactly Quantity",
   ["Купить"] = "Buy",
   ["ПОДТВЕРДИТЬ x%d %s за %s"] = "CONFIRM x%d %s for %s",
   ["ОТМЕНИТЬ котировку"] = "CANCEL quote",
@@ -256,7 +264,13 @@ local function setPostStatus(text) -- sell block
   if ui then ui.postStatus:SetText(text) end
 end
 
-local function refreshStats()
+local refreshStats
+function ns.resetStats()
+  stats = { tries = 0, cancels = 0, busy = 0, byItem = {} }
+  refreshStats()
+end
+
+refreshStats = function()
   if not ui then return end
   ui.stats:SetText((L("Сессия: попыток %d, отмен %d, занято %d")):format(stats.tries, stats.cancels, stats.busy))
   local s = db().itemID and stats.byItem[db().itemID]
@@ -271,7 +285,9 @@ end
 local function refreshBuyButton()
   if not ui then return end
   local c = cur()
-  local label = c and (L("Купить x%d <= %s")):format(c.qty, money(parseMoney(c.priceText))) or L("Купить")
+  local spread = c and c.spreadOn and c.spread or 0
+  local label = c and (L("Купить x%s <= %s")):format(c.qty .. (spread > 0 and "±" .. spread or ""),
+    money(parseMoney(c.priceText))) or L("Купить")
   if state == "ready" then
     label = (L("ПОДТВЕРДИТЬ x%d %s за %s")):format(pending.qty,
       C_Item.GetItemNameByID(pending.itemID) or "", money(pending.total))
@@ -415,7 +431,11 @@ local function onBuyClick()
   if price <= 0 then return setStatus(L("Задай цену для этого предмета: 3s, 55c, 1g20s")) end
   if c.qty <= 0 then return setStatus(L("Количество должно быть > 0")) end
   if not serverReady() then return busy() end
-  startQuote(db().itemID, c.qty, price)
+  -- Optional spread: this one request asks for qty ± spread units (at least 1), so a smaller cheap lot can fit
+  -- the average. The confirm and the max-price check use this same quoted quantity.
+  local qty, spread = c.qty, c.spread or 0
+  if c.spreadOn and spread > 0 then qty = math.max(1, qty + math.random(-spread, spread)) end
+  startQuote(db().itemID, qty, price)
 end
 
 ---------------------------------------------------------------- post
@@ -464,6 +484,8 @@ local function refreshItem()
   ui.idBox:SetText(id and tostring(id) or "")
   ui.priceBox:SetText(c and c.priceText or "")
   ui.qtyBox:SetText(c and tostring(c.qty) or "")
+  ui.spreadBox:SetText(c and tostring(c.spread or 0) or "")
+  ui.spreadCheck:SetChecked(c and c.spreadOn or false)
   ui.sellBox:SetText(c and c.sellText or "")
   refreshPost()
   refreshList()
@@ -751,6 +773,34 @@ local function buildUI()
     local c = cur()
     if c then c.qty = tonumber(t) or 0; dropReady() end
   end)
+  -- spread, per item: [x] ± [n]. Changes only the next price request, so a ready quote stays as it is
+  ui.spreadBox = makeBox(y, 30, true, function(t)
+    local c = cur()
+    if c then c.spread = tonumber(t) or 0 end
+  end)
+  ui.spreadBox:SetPoint("TOPRIGHT", -84, y + 4)
+  local pm = host:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  pm:SetPoint("RIGHT", ui.spreadBox, "LEFT", -6, 0)
+  pm:SetText("±")
+  ui.spreadCheck = CreateFrame("CheckButton", nil, host, "UICheckButtonTemplate")
+  ui.spreadCheck:SetSize(24, 24)
+  ui.spreadCheck:SetPoint("RIGHT", pm, "LEFT", 0, 0)
+  ui.spreadCheck:SetScript("OnClick", function(self)
+    local c = cur()
+    if c then c.spreadOn = self:GetChecked() and true or nil else self:SetChecked(false) end
+    refreshBuyButton()
+  end)
+  local function spreadTip(self)
+    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+    GameTooltip:AddLine(L("Разброс количества"))
+    GameTooltip:AddLine(L("Каждый запрос цены берёт Кол-во ± это число (не меньше 1). 0 — ровно Кол-во"),
+      0.7, 0.7, 0.7, true)
+    GameTooltip:Show()
+  end
+  for _, w in ipairs({ ui.spreadBox, ui.spreadCheck }) do
+    w:SetScript("OnEnter", spreadTip)
+    w:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  end
   y = y - 24
 
   -- presets 5/10/20/50 + your own (RMB stores the number typed in the qty box); key bindings press the same
@@ -796,26 +846,59 @@ local function buildUI()
 
   ---------------- bottom: settings, log, session stats
   y = section(nil, y)
-  makeCheck(12, y + 2, L("Звуки"), "sound")
   local logBtn = makeButton(nil, L("Лог"), 70, function() ns.toggleLog() end)
   logBtn:SetPoint("TOPRIGHT", -16, y)
-  ui.rowsBtn = makeButton(nil, "", 84, function()
-    db().rows = db().rows % MAX_ROWS + 1
-    layoutRows()
-  end)
-  ui.rowsBtn:SetPoint("TOPRIGHT", -90, y)
+  local optBtn = makeButton(nil, L("Настройки"), 90, function() ui.opt:SetShown(not ui.opt:IsShown()) end)
+  optBtn:SetPoint("TOPRIGHT", -90, y)
   y = y - 26
   ui.stats = statusLine(y, "GameFontDisableSmall")
   y = y - 20
   ui.bodyHeight = -y + 8
   ui.body:SetHeight(ui.bodyHeight)
+
+  ---------------- settings window: every switch that /flip commands toggle, plus history rows. UI only.
+  local opt = CreateFrame("Frame", "FlipPanelSettingsFrame", UIParent, "BasicFrameTemplateWithInset")
+  ui.opt = opt
+  opt:SetSize(300, 210)
+  opt:SetPoint("TOPLEFT", ui, "TOPRIGHT", 4, 0)
+  opt:SetMovable(true)
+  opt:SetClampedToScreen(true)
+  opt:EnableMouse(true)
+  opt:RegisterForDrag("LeftButton")
+  opt:SetScript("OnDragStart", opt.StartMoving)
+  opt:SetScript("OnDragStop", opt.StopMovingOrSizing)
+  if opt.TitleText then opt.TitleText:SetText(L("FlipPanel — настройки")) end
+  if UISpecialFrames then table.insert(UISpecialFrames, "FlipPanelSettingsFrame") end -- Esc closes it
+  host = opt
+  local checks = {
+    makeCheck(12, -30, L("Звуки"), "sound"),
+    makeCheck(12, -54, L("Ctrl + колесо мыши = кнопка покупки"), "wheel", function()
+      if ahOpen and db().wheel then ns.bindWheel() else ns.unbindWheel() end
+    end),
+    makeCheck(12, -78, L("Быстрый режим (эксперимент): без отмены котировки"), "fast"),
+    makeCheck(12, -102, L("Писать отладку: каждый запрос к аукциону и ответ сервера"), "debug"),
+  }
+  opt.checks = checks
+  opt:SetScript("OnShow", function() -- /flip commands may have changed them meanwhile
+    for i, key in ipairs({ "sound", "wheel", "fast", "debug" }) do checks[i]:SetChecked(db()[key]) end
+  end)
+  ui.rowsBtn = makeButton(nil, "", 120, function()
+    db().rows = db().rows % MAX_ROWS + 1
+    layoutRows()
+  end)
+  ui.rowsBtn:SetPoint("TOPLEFT", 16, -134)
+  local resetBtn = makeButton(nil, L("Сбросить статистику"), 130, function() ns.resetStats() end)
+  resetBtn:SetPoint("TOPLEFT", 16, -164)
+  local posBtn = makeButton(nil, L("Панель на место"), 130, function() db().pos = nil; placeUI() end)
+  posBtn:SetPoint("TOPLEFT", 152, -164)
+  opt:Hide()
   layoutRows()
 
   resetPost()
   refreshItem()
   -- Hidden panel = no wheel buying (bindWheel/unbindWheel are defined below, looked up at call time)
   ui:SetScript("OnShow", function() ns.bindWheel() end)
-  ui:SetScript("OnHide", function() ns.unbindWheel() end)
+  ui:SetScript("OnHide", function() ns.unbindWheel(); ui.opt:Hide() end)
 end
 
 ---------------------------------------------------------------- log window
@@ -969,8 +1052,7 @@ SlashCmdList["FLIPPANEL"] = function(text)
     msg(L("Ctrl+колесо: ") .. (db().wheel and L("вкл") or L("выкл")))
     if ahOpen then if db().wheel then bindWheel() else unbindWheel() end end
   elseif text == "reset" then
-    stats = { tries = 0, cancels = 0, busy = 0, byItem = {} }
-    refreshStats()
+    ns.resetStats()
   elseif text == "resetpos" then
     db().pos = nil
     if ui then placeUI() end

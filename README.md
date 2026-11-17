@@ -12,9 +12,11 @@ Commodities only: items sold by quantity, such as cloth, ore, bars and herbs.
 - Buys exactly N units when the average price is at or below your max. It never buys above your max.
 - One button (or Ctrl + mouse wheel). Every press sends exactly one request: get the price, confirm, or cancel.
 - Posts the chosen quantity at a separate sell price for the chosen duration.
-- Item history: 1, 2 or 3 rows of 10 (the "History" button), each item with its own buy price, sell price and quantity.
+- Item history: 1, 2 or 3 rows of 10 (the "History" button in Settings), each item with its own buy price, sell price and quantity.
 - Quantity buttons 5 / 10 / 20 / 50 plus your own (right-click the 5th button to store the number in the Quantity box), each can have a key binding.
+- Quantity spread (the tick box and the "±" box next to Quantity, per item): each price request asks for Quantity ± this number, so a small cheap lot can fit sometimes. 0 means exactly Quantity.
 - Sounds and per-session spending stats.
+- A Settings window (button at the bottom of the panel): sounds, Ctrl + wheel, fast mode, debug, history rows, reset stats and panel position.
 - A log window: purchases and posts in one tab, errors and cancels in another. The log is saved between sessions.
 
 ## Install
@@ -25,7 +27,7 @@ Or install it with WowUp: Get Addons → Install from URL → paste this reposit
 ## Usage
 
 The panel opens to the right of the auction house window. It has three blocks, top to bottom:
-Item, Sell and Buy. The sound toggle, the log button and session stats sit at the bottom.
+Item, Sell and Buy. The Settings and Log buttons and session stats sit at the bottom.
 
 1. Item: drag an item onto the slot, type its ID and press Enter, or Shift+click its link while the ID box has focus.
 2. Sell: set the price each (`3s`, `55c`, `1g20s`), the quantity and the duration, then press "Post".
